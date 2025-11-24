@@ -30,27 +30,30 @@ class Game:
         
         # Setup rooms
 
-        forest = Room("Forest", "dans une forêt enchantée. Vous entendez une brise légère à travers la cime des arbres.")
+        forest = Room("Forest", "une forêt enchantée. Vous entendez une brise légère à travers la cime des arbres.")
         self.rooms.append(forest)
-        tower = Room("Tower", "dans une immense tour en pierre qui s'élève au dessus des nuages.")
+        tower = Room("Tower", "une immense tour en pierre qui s'élève au dessus des nuages.")
         self.rooms.append(tower)
-        cave = Room("Cave", "dans une grotte profonde et sombre. Des voix semblent provenir des profondeurs.")
+        cave = Room("Cave", "une grotte profonde et sombre. Des voix semblent provenir des profondeurs.")
         self.rooms.append(cave)
-        cottage = Room("Cottage", "dans un petit chalet pittoresque avec un toit de chaume. Une épaisse fumée verte sort de la cheminée.")
+        cottage = Room("Cottage", "un petit chalet pittoresque avec un toit de chaume. Une épaisse fumée verte sort de la cheminée.")
         self.rooms.append(cottage)
-        swamp = Room("Swamp", "dans un marécage sombre et ténébreux. L'eau bouillonne, les abords sont vaseux.")
+        swamp = Room("Swamp", "un marécage sombre et ténébreux. L'eau bouillonne, les abords sont vaseux.")
         self.rooms.append(swamp)
-        castle = Room("Castle", "dans un énorme château fort avec des douves et un pont levis. Sur les tours, des flèches en or massif.")
+        castle = Room("Castle", "un énorme château fort avec des douves et un pont levis. Sur les tours, des flèches en or massif.")
         self.rooms.append(castle)
 
         # Create exits for rooms
 
-        forest.exits = {"N" : cave, "E" : tower, "S" : castle, "O" : None}
-        tower.exits = {"N" : cottage, "E" : None, "S" : swamp, "O" : forest}
+        forest.exits = {"N" : cave, "E" : None, "S" : castle, "O" : None}      
+        # Rendre la sortie depuis Swamp vers Tower possible, mais pas l'inverse.
+        tower.exits = {"N" : cottage, "E" : None, "S" : None, "O" : None}    
         cave.exits = {"N" : None, "E" : cottage, "S" : forest, "O" : None}
         cottage.exits = {"N" : None, "E" : None, "S" : tower, "O" : cave}
-        swamp.exits = {"N" : tower, "E" : None, "S" : None, "O" : castle}
-        castle.exits = {"N" : forest, "E" : swamp, "S" : None, "O" : None}
+        # Pour empêcher tout passage entre la Forêt et la Tour,
+        # on supprime les connexions entre Castle et Swamp.
+        swamp.exits = {"N" : tower, "E" : None, "S" : None, "O" : None}
+        castle.exits = {"N" : forest, "E" : None, "S" : None, "O" : None}
 
         # Setup player and starting room
 
@@ -69,9 +72,13 @@ class Game:
 
     # Process the command entered by the player
     def process_command(self, command_string) -> None:
+        # Ignore empty input (appui sur Entrée ou uniquement des espaces)
+        command_string = command_string.strip()
+        if command_string == "":
+            return None
 
         # Split the command string into a list of words
-        list_of_words = command_string.split(" ")
+        list_of_words = command_string.split()
 
         command_word = list_of_words[0]
 
