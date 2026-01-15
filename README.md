@@ -17,3 +17,8 @@ Il y a pour le moment 5 modules contenant chacun une classe.
 
 
 Initialisation du dépôt Git – Leçon 1.
+## Navigation et carte personnalisée
+
+Le jeu utilise une carte structurée permettant une navigation fluide entre les différentes zones.
+Les actions disponibles pour le joueur ont été améliorées afin de rendre l’exploration plus intuitive
+et éviter les erreurs de parcours.
