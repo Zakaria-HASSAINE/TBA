@@ -27,3 +27,8 @@ et éviter les erreurs de parcours.
 Le jeu intègre désormais un système d’historique permettant au joueur
 de revenir en arrière via une commande dédiée.  
 Cela améliore l’expérience utilisateur et évite de bloquer la progression.
+## Objets et gestion de l’inventaire
+
+Le jeu intègre un système d’objets récupérables et un inventaire permettant
+au joueur de stocker, consulter et utiliser les éléments collectés au cours
+de l’exploration.
