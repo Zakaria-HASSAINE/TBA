@@ -37,3 +37,7 @@ de l’exploration.
 Le jeu inclut des personnages non-joueurs avec lesquels le joueur peut
 interagir. Ces interactions enrichissent la narration et influencent
 la progression au cours de l’aventure.
+## Quêtes
+
+Le jeu propose un système de quêtes permettant de guider le joueur
+à travers différents objectifs et d’enrichir la progression narrative.
