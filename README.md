@@ -22,3 +22,8 @@ Initialisation du dépôt Git – Leçon 1.
 Le jeu utilise une carte structurée permettant une navigation fluide entre les différentes zones.
 Les actions disponibles pour le joueur ont été améliorées afin de rendre l’exploration plus intuitive
 et éviter les erreurs de parcours.
+## Historique et commande de retour
+
+Le jeu intègre désormais un système d’historique permettant au joueur
+de revenir en arrière via une commande dédiée.  
+Cela améliore l’expérience utilisateur et évite de bloquer la progression.
