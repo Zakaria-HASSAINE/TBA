@@ -41,3 +41,4 @@ la progression au cours de l’aventure.
 
 Le jeu propose un système de quêtes permettant de guider le joueur
 à travers différents objectifs et d’enrichir la progression narrative.
+Les quêtes peuvent être consultées et suivies tout au long de la partie.
