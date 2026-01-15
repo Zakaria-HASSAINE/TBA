@@ -32,3 +32,8 @@ Cela améliore l’expérience utilisateur et évite de bloquer la progression.
 Le jeu intègre un système d’objets récupérables et un inventaire permettant
 au joueur de stocker, consulter et utiliser les éléments collectés au cours
 de l’exploration.
+## Personnages non-joueurs (PNJ) et interactions
+
+Le jeu inclut des personnages non-joueurs avec lesquels le joueur peut
+interagir. Ces interactions enrichissent la narration et influencent
+la progression au cours de l’aventure.
