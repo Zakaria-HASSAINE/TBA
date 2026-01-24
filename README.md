@@ -137,7 +137,10 @@ Le fichier `npcs.py` n’est plus utilisé.
 | Cinématiques | assets/OUTRO_*.png |
 
 ---
+## Vidéos de présentation
 
+- `vidéo.mp4` : démonstration principale du jeu
+- `BONUS_Bande_d'annonce_du_jeu.mp4` : contenu bonus et fonctionnalités avancées
 ## Diagramme de classes (Mermaid)
 
 ```mermaid
