@@ -1,161 +1,168 @@
 import os
+import sys
+import tkinter as tk
+from tkinter import messagebox, simpledialog
 
 from room import Room
 from player import Player
 from command import Command
 from actions import Actions
 from item import Item
-import sys
-import tkinter as tk
-from tkinter import messagebox, simpledialog
-
+from quest import Quest, QuestManager
+from character import Argos, Cassian
 
 
 class Game:
-    """
-    Structure prof respectée :
-    - __init__
-    - setup
-    - play
-    - process_command
-    - print_welcome
-
-    + Ajouts internes (chapitres / cinématiques / dilemmes) sans casser la structure.
-    """
-
     def __init__(self):
-        self.finished = False
-        self.rooms = []
         self.commands = {}
+        self.finished = False
+        self.gui = None
         self.player = None
-        self.gui = None  
-
-
-        # --------------------
-        # CHAPITRES / ETATS
-        # --------------------
         self.chapter = 1
+        self.qm = QuestManager()
 
-        # Mode de saisie : FREE = commandes normales, CHOICE = dilemme N/E/O/S + back
-        self.input_mode = "FREE"
-        self.choice_prompt = ""
+        # Modes d'entrée
+        self.input_mode = "NORMAL"  # NORMAL / CHOICE
         self.choice_allowed = set()
-        self.choice_handler = None  # fonction appelée si input_mode == CHOICE
+        self.choice_prompt = ""
+        self.choice_handler = None
 
-        # checkpoint de dilemme (pour back DANS un dilemme)
+        # checkpoint choix (permet "back" en CHOICE sans crash)
         self.choice_checkpoint = None
 
-        # --------------------
-        # FLAGS CHAP 1
-        # --------------------
+        # Map / rooms
+        self.rooms = []
+
+        # Story flags
         self.story_started = False
         self.drone_choice_done = False
+        self.has_vault_access = False
         self.argos_choice_done = False
         self.cassian_choice_done = False
-
-        self.argos_ally = None     # True/False
-        self.cassian_saved = None  # True/False
-
-        # Blessure (dilemme drone)
-        self.player_injured = False
-
-        # Accès à la Vault (obtenu via dilemme drone)
-        self.has_vault_access = False
-
-        # Labyrinthe (si Argos neutralisé)
         self.in_labyrinth = False
+        self.verdun_major_choice_done = False
+        self.barbossa_command_choice_done = False
+        self.barbossa_final_choice_done = False
+
+        self.soft_start = None
+        self.soft_end = None
         self.labyrinth_entry_room = None
         self.labyrinth_exit_room = None
         self.labyrinth_deaths = {}
+        self.argos_ally = None
+        self.cassian_saved = None
+        self.verdun_message_modified = False
+        self.barbossa_kept_sample = False
+        self.barbossa_route_fast = False
 
-        # Conduits soft
-        self.soft_start = None
-        self.soft_end = None
+        # Drone outcome
+        self.player_injured = False
 
-        # --------------------
-        # FLAGS CHAP 2 (Verdun)
-        # --------------------
-        self.verdun_message_modified = None   # True/False
-        self.verdun_major_choice_done = False
+        # Cutscene image override (GUI)
+        self._override_image = None
 
-        # --------------------
-        # FLAGS CHAP 3 (Barbarossa)
-        # --------------------
-        self.barbossa_command_choice_done = False
-        self.barbossa_final_choice_done = False
-        self.barbossa_route_fast = None
-        self.barbossa_kept_sample = None
+        # Chapter rooms placeholders
+        self.ch1_start = None
+        self.ch2_spawn = None
+        self.ch2_exit = None
+        self.ch3_spawn = None
+        self.ch3_exit = None
+        self.ch3_hq = None
 
-    # ========= UTIL =========
-
+    # =========================
+    # UTIL / END
+    # =========================
     def clear_screen(self):
         if self.gui is not None:
-            self.gui.clear_output()
-        else:
-            os.system('cls' if os.name == 'nt' else 'clear')
+            try:
+                self.gui.clear_output()
+                self.gui.refresh_room_image()
+            except Exception:
+                pass
+            return
+        os.system("cls" if os.name == "nt" else "clear")
 
-
-    def pause(self, txt="\n(Appuie sur Entrée) "):
-        # En GUI : on remplace les pauses bloquantes par une popup OK
-        if self.gui is not None:
-            messagebox.showinfo("ATLAS 2160", "OK pour continuer.")
-        else:
+    def pause(self, txt="\n(Appuie sur Entrée pour continuer) "):
+        # En GUI, GameGUI remplace self.pause par gui_pause.
+        try:
             input(txt)
+        except EOFError:
+            pass
 
-
-    def set_choice_mode(self, prompt, allowed, handler, make_checkpoint=True):
+    def end_game(self, message: str = "", mock: str = "", show_msgbox: bool = True):
         """
-        Active un dilemme 
-        - prompt affiché
-        - allowed : set des réponses autorisées (ex: {"N","E"})
-        - handler : fonction(handler_game, answer)
+        Fin propre du jeu, compatible CLI + GUI.
+        - message : texte principal
+        - mock : petite phrase optionnelle
+        """
+        try:
+            self.clear_screen()
+        except Exception:
+            pass
+
+        if message:
+            print(message)
+            print()
+        if mock:
+            print(mock)
+            print()
+
+        self.finished = True
+
+        # GUI : désactiver l'entrée/boutons + popup
+        if self.gui is not None:
+            try:
+                self.gui.disable_inputs()
+            except Exception:
+                pass
+            if show_msgbox:
+                try:
+                    messagebox.showinfo("ATLAS 2160", "Fin du jeu.")
+                except Exception:
+                    pass
+
+    # =========================
+    # CHOICE MODE (FIX)
+    # =========================
+    def set_choice_mode(self, prompt: str, allowed: set, handler):
+        """
+        Active le mode CHOICE.
+        On sauvegarde un checkpoint minimal pour que 'back' n'explose pas.
         """
         self.input_mode = "CHOICE"
         self.choice_prompt = prompt
         self.choice_allowed = set(allowed)
         self.choice_handler = handler
-
-        if make_checkpoint:
-            # checkpoint = revenir au début du dilemme, PAS à la map
-            self.choice_checkpoint = {
-                "chapter": self.chapter,
-                "room": self.player.current_room,
-                "state": {
-                    "in_labyrinth": self.in_labyrinth,
-                },
-                "prompt": prompt,
-                "allowed": set(allowed),
-                "handler": handler
-            }
-
-        self.clear_screen()
-        print(self.player.current_room.get_long_description())
-        self.player.current_room.show_inventory()
+        self.choice_checkpoint = {
+            "room": self.player.current_room if self.player else None,
+            "override": getattr(self, "_override_image", None),
+            "prompt": prompt,
+            "allowed": set(allowed),
+        }
         print(prompt)
 
     def exit_choice_mode(self):
-        self.input_mode = "FREE"
-        self.choice_prompt = ""
+        self.input_mode = "NORMAL"
         self.choice_allowed = set()
+        self.choice_prompt = ""
         self.choice_handler = None
         self.choice_checkpoint = None
 
     def restore_choice_checkpoint(self):
-        ck = self.choice_checkpoint
-        if ck is None:
-            return False
+        """
+        'back' en mode CHOICE : on ré-affiche juste le prompt.
+        """
+        if self.choice_checkpoint:
+            print("\n(relecture du choix)\n")
+            print(self.choice_checkpoint["prompt"])
 
-        self.chapter = ck["chapter"]
-        self.player.current_room = ck["room"]
-        self.in_labyrinth = ck["state"].get("in_labyrinth", False)
-
-        # Réaffiche et remet le dilemme
-        self.set_choice_mode(ck["prompt"], ck["allowed"], ck["handler"], make_checkpoint=False)
-        return True
-
-    # ========= INTRO split en 2 =========
-
+    # =========================
+    # INTRO
+    # =========================
     def cinematic_intro_split(self):
+        # Image unique pour toute l'intro
+        self._override_image = "INTRO.png"
+
         self.clear_screen()
         print("""
 Le sol tremble encore légèrement sous toi.
@@ -183,7 +190,9 @@ Et là, la mémoire te revient peu à peu…
         """.strip())
         self.pause()
 
-        self.clear_screen()
+        if self.gui is None:
+            self.clear_screen()
+
         print("""
 La Troisième Guerre Mondiale n’a pas commencé pour un territoire.
 Ni pour une religion.
@@ -217,29 +226,34 @@ Ta mission — ta survie — commence maintenant.
         """.strip())
         self.pause()
 
-    # ========= SETUP =========
+        # Fin intro
+        self._override_image = None
 
+    # =========================
+    # SETUP
+    # =========================
     def setup(self):
-        # Commandes : modèle prof
         self.commands["help"] = Command("help", " : afficher cette aide", Actions.help, 0)
         self.commands["quit"] = Command("quit", " : quitter le jeu", Actions.quit, 0)
-        self.commands["go"] = Command("go", " <direction> : se déplacer (N,E,S,O)", Actions.go, 1)
+        self.commands["go"] = Command("go", " <direction> : se déplacer (N,E,S,O,U,D)", Actions.go, 1)
 
-        # Extensions (si présentes)
-        if hasattr(Actions, "back"):
-            self.commands["back"] = Command("back", " : revenir en arrière (déplacement)", Actions.back, 0)
-        if hasattr(Actions, "look"):
-            self.commands["look"] = Command("look", " : observer la salle", Actions.look, 0)
-        if hasattr(Actions, "take"):
-            self.commands["take"] = Command("take", " : ramasser un objet", Actions.take, 0)
-        if hasattr(Actions, "t"):
-            self.commands["t"] = Command("t", " : alias de take", Actions.t, 0)
-        if hasattr(Actions, "check"):
-            self.commands["check"] = Command("check", " : inventaire", Actions.check, 0)
-        if hasattr(Actions, "history"):
-            self.commands["history"] = Command("history", " : historique", Actions.history, 0)
+        self.commands["back"] = Command("back", " : revenir en arrière", Actions.back, 0)
+        self.commands["look"] = Command("look", " : observer la salle", Actions.look, 0)
+        self.commands["check"] = Command("check", " : inventaire", Actions.check, 0)
+        self.commands["history"] = Command("history", " : historique", Actions.history, 0)
 
-        # maps chapitres
+        # ✅ drop command bien présent
+        self.commands["drop"] = Command("drop", " <objet> : déposer un objet", Actions.drop, 1)
+
+        self.commands["take"] = Command("take", " <objet> : ramasser un objet", Actions.take, 1)
+        self.commands["t"] = Command("t", " <objet> : alias de take", Actions.t, 1)
+
+        self.commands["quests"] = Command("quests", " : lister les quêtes", Actions.quests, 0)
+        self.commands["quest"] = Command("quest", " <id> : détails d’une quête", Actions.quest, 1)
+        self.commands["activate"] = Command("activate", " <id> : activer/suivre une quête", Actions.activate, 1)
+        self.commands["rewards"] = Command("rewards", " : afficher les récompenses", Actions.rewards, 0)
+        self.commands["talk"] = Command("talk", " <pnj> : parler à quelqu’un", Actions.talk, 1)
+
         self.build_chapter1_map()
         self.build_chapter2_map()
         self.build_chapter3_map()
@@ -254,14 +268,13 @@ Ta mission — ta survie — commence maintenant.
             name = "Inconnu"
         self.player = Player(name)
 
+        self._install_quests()  # crée toutes les quêtes
+        self.qm.activate("Q1")  # quête principale active au début
 
-        # intro
         self.cinematic_intro_split()
 
-        # start chap 1
         self.chapter = 1
         self.player.current_room = self.ch1_start
-        # marque visited pour éviter blocage si visited est utilisé
         if hasattr(self.player.current_room, "visited"):
             self.player.current_room.visited = True
 
@@ -276,17 +289,82 @@ Ta mission — ta survie — commence maintenant.
         print(self.player.current_room.get_long_description())
         self.player.current_room.show_inventory()
 
-    # ========= BOUCLE =========
+    def _install_quests(self):
+        # ===== CHAPITRE 1 =====
+        self.qm.add_quest(Quest(
+            qid="Q1",
+            title="Fragments & Accès ATLAS",
+            description="Récupérer les fragments temporels et ouvrir l’accès vers Vault X-09.",
+            objectives=[
+                "Récupérer Fragment_Alpha",
+                "Récupérer Fragment_Beta",
+                "Récupérer Fragment_Gamma",
+                "Récupérer Fragment_Delta",
+                "Débloquer l’accès à Vault X-09 (badge)",
+                "Atteindre Vault X-09",
+            ],
+            reward=["Accès au chapitre 2", "Compréhension partielle du piège temporel"]
+        ))
 
+        # ===== CHAPITRE 2 =====
+        self.qm.add_quest(Quest(
+            qid="Q2",
+            title="Verdun 1916 — L’ordre scellé",
+            description="Trouver l’ordre, traverser la zone, puis décider de l’histoire que tu laisses.",
+            objectives=[
+                "Récupérer Envelope_Orders",
+                "Atteindre No Man’s Land",
+                "Récupérer Shard_Helias",
+                "Atteindre le point d’extraction temporel (Verdun)",
+                "Faire le choix Verdun (ordre modifié OU non)",
+            ],
+            reward=["Accès au chapitre 3", "Trace temporelle (selon ton choix)"]
+        ))
+
+        # ===== CHAPITRE 3 =====
+        self.qm.add_quest(Quest(
+            qid="Q3",
+            title="Barbarossa 1941 — Le relais",
+            description="Identifier le relais, récupérer le noyau, et survivre à la convergence.",
+            objectives=[
+                "Atteindre la Table des cartes",
+                "Atteindre la Ferme abandonnée",
+                "Atteindre le Bunker de communication",
+                "Récupérer Relay_Core",
+                "Atteindre le Portail de convergence",
+                "Faire le choix final (garder OU détruire l’échantillon)",
+            ],
+            reward=["Fin du scénario (démo)", "Révélation finale déclenchée"]
+        ))
+
+        # ===== OPTIONNEL =====
+        self.qm.add_quest(Quest(
+            qid="Q4",
+            title="Optionnelle — Discipline du survivant",
+            description="Explorer les lieux clés du chapitre 1 (pousse le joueur à visiter).",
+            objectives=[
+                "Visiter Watchtower Omega",
+                "Visiter Drone Control Hub",
+                "Visiter Quantum Core Room",
+            ],
+            reward=["Lore bonus", "Meilleure compréhension des systèmes ATLAS"]
+        ))
+
+    def _print_quest_updates(self):
+        updates = self.qm.pop_updates()
+        if updates:
+            print("\n".join(updates))
+            print()
+
+    # =========================
+    # LOOP
+    # =========================
     def play(self):
         self.setup()
 
-        # En GUI : pas de boucle input() ici.
-        # C’est l’interface (event loop) qui appelle process_command().
         if self.gui is not None:
             return
 
-        # Mode CLI (terminal) : boucle classique
         while not self.finished:
             if self.chapter == 1:
                 self.chapter1_triggers()
@@ -298,121 +376,206 @@ Ta mission — ta survie — commence maintenant.
 
             cmd = input("> ")
             self.process_command(cmd)
-  
 
     def process_command(self, command_string) -> None:
-        # Mode dilemme : N/E/.../back (sans "go")
-        if self.input_mode == "CHOICE":
-            ans = command_string.strip()
-            if ans == "":
-                return
+        if command_string is None:
+            return
 
-            ans_up = ans.upper()
+        raw = command_string.strip()
+        if raw == "":
+            return
 
-            if ans.lower() == "back":
+        # BACK universel
+        if raw.lower() == "back":
+            if self.input_mode == "CHOICE":
                 self.restore_choice_checkpoint()
                 return
+            try:
+                self.commands["back"].action(self, ["back"], 0)
+            except Exception:
+                try:
+                    if hasattr(self.player, "go_back"):
+                        self.player.go_back()
+                except Exception:
+                    pass
+            return
 
+        # Mode CHOICE
+        if self.input_mode == "CHOICE":
+            ans_up = raw.upper()
             if ans_up not in self.choice_allowed:
                 print("\nChoix invalide.\n")
                 print(self.choice_prompt)
                 return
-
-            # handler attendu : (game, answer)
-            self.choice_handler(self, ans_up)
+            try:
+                self.choice_handler(self, ans_up)
+            except Exception:
+                print("\nErreur : choix indisponible.\n")
             return
 
-        # Mode normal : commandes du prof
-        if command_string.strip() == "":
-            return
-
-        list_of_words = command_string.split(" ")
+        # Mode normal
+        list_of_words = raw.split()
         command_word = list_of_words[0]
 
         if command_word not in self.commands:
             print(f"\nCommande '{command_word}' non reconnue. Entrez 'help' pour voir la liste.\n")
             return
 
+        # TAKE simplifié : "take" sans objet + 1 item => auto
+        if command_word in ("take", "t") and len(list_of_words) == 1:
+            try:
+                room = self.player.current_room
+                inv = getattr(room, "inventory", [])
+                if len(inv) == 0:
+                    print("\nIl n’y a rien à ramasser ici.\n")
+                    return
+                if len(inv) == 1:
+                    only_item = inv[0]
+                    list_of_words = [command_word, only_item.name]
+                else:
+                    print("\nPlusieurs objets sont présents. Tape 'look' puis 'take <objet>'.\n")
+                    return
+            except Exception:
+                print("\nImpossible de ramasser.\n")
+                return
+
         command = self.commands[command_word]
-        command.action(self, list_of_words, command.number_of_parameters)
+        try:
+            command.action(self, list_of_words, command.number_of_parameters)
+        except Exception:
+            print("\nErreur pendant l'exécution de la commande.\n")
 
-        # sécurité : si on bouge via actions.go, et que Room a visited, on le marque
-        if self.player and self.player.current_room and hasattr(self.player.current_room, "visited"):
-            self.player.current_room.visited = True
+        # ✅ inv_names doit exister AVANT les checks
+        try:
+            inv_names = [it.name for it in getattr(self.player, "inventory", [])]
+        except Exception:
+            inv_names = []
+
+        # ✅ Quêtes liées aux items
+        try:
+            if command_word in ("take", "t"):
+                if "Fragment_Alpha" in inv_names:
+                    self.qm.complete("Q1", "Récupérer Fragment_Alpha")
+                if "Fragment_Beta" in inv_names:
+                    self.qm.complete("Q1", "Récupérer Fragment_Beta")
+                if "Fragment_Gamma" in inv_names:
+                    self.qm.complete("Q1", "Récupérer Fragment_Gamma")
+                if "Fragment_Delta" in inv_names:
+                    self.qm.complete("Q1", "Récupérer Fragment_Delta")
+
+            if "Envelope_Orders" in inv_names:
+                self.qm.complete("Q2", "Récupérer Envelope_Orders")
+            if "Shard_Helias" in inv_names:
+                self.qm.complete("Q2", "Récupérer Shard_Helias")
+            if "Relay_Core" in inv_names:
+                self.qm.complete("Q3", "Récupérer Relay_Core")
+        except Exception:
+            pass
+
+        # ✅ Quêtes liées aux salles
+        try:
+            r = self.player.current_room
+            rn = getattr(r, "name", "")
+
+            # Chap 1 - quête optionnelle Q4
+            if rn == "Watchtower Omega":
+                self.qm.complete("Q4", "Visiter Watchtower Omega")
+            if rn == "Drone Control Hub":
+                self.qm.complete("Q4", "Visiter Drone Control Hub")
+            if rn == "Quantum Core Room":
+                self.qm.complete("Q4", "Visiter Quantum Core Room")
+
+            # Chap 1 - Vault X-09
+            if rn == "Vault X-09":
+                self.qm.complete("Q1", "Atteindre Vault X-09")
+
+            # Chap 2 - progression
+            if rn == "No Man’s Land":
+                self.qm.complete("Q2", "Atteindre No Man’s Land")
+            if rn == "Point d’extraction temporel":
+                self.qm.complete("Q2", "Atteindre le point d’extraction temporel (Verdun)")
+
+            # Chap 3 - progression
+            if rn == "Table des cartes":
+                self.qm.complete("Q3", "Atteindre la Table des cartes")
+            if rn == "Ferme abandonnée":
+                self.qm.complete("Q3", "Atteindre la Ferme abandonnée")
+            if rn == "Bunker de communication":
+                self.qm.complete("Q3", "Atteindre le Bunker de communication")
+            if rn == "Portail de convergence":
+                self.qm.complete("Q3", "Atteindre le Portail de convergence")
+        except Exception:
+            pass
+
+        self._print_quest_updates()
+
+        try:
+            if self.player and self.player.current_room and hasattr(self.player.current_room, "visited"):
+                self.player.current_room.visited = True
+        except Exception:
+            pass
 
     # =========================
-    # BUILD MAPS
+    # MAPS
     # =========================
-
     def build_chapter1_map(self):
-        # --- Salles chap 1 ---
         surface_ruins = Room(
             "Surface Ruins",
             "au milieu des ruines d’une métropole détruite. Drones brûlés, façades éventrées…\n"
             "Un silence lourd règne, comme si la ville retenait encore sa respiration."
         )
-
         biodome = Room(
             "BioDome",
             "dans une serre géante fissurée. La végétation artificielle se décompose en silence…\n"
             "Au sol, des traces récentes contredisent l’abandon apparent."
         )
-
         storage_b7 = Room(
             "Storage B7",
             "dans un entrepôt militaire fracturé. Des caisses scellées, des cadenas explosés.\n"
             "Un message peint à la hâte sur un mur : « NE FAITES PLUS CONFIANCE AUX IA. »"
         )
-
         nexus_gate = Room(
             "Nexus Gate",
             "devant une porte blindée colossale : l’entrée principale de la Forteresse ATLAS.\n"
             "Le système est verrouillé. Un écran muet affiche : « ACCÈS OPÉRATEUR REQUIS. »"
         )
-
         cryolab_12 = Room(
             "CryoLab 12",
             "dans un laboratoire glacé. Des capsules de stase sont ouvertes… certaines sont vides.\n"
             "Une buée froide se traîne au ras du sol, comme une présence."
         )
-
         neurolink = Room(
             "NeuroLink Chamber",
             "dans une chambre neurale. Des casques reliés à des interfaces encore actives par intermittence.\n"
             "Par moments, un léger bourdonnement ressemble à… un murmure."
         )
-
         watchtower = Room(
             "Watchtower Omega",
             "au sommet d’une tour d’observation. La zone entière se dévoile sous un ciel chargé.\n"
             "Un seul instrument fonctionne encore : il pointe obstinément… vers la surface."
         )
-
         drone_hub = Room(
             "Drone Control Hub",
             "dans un centre de commande. Les consoles sont mortes… sauf une, encore chaude.\n"
             "Quelqu’un était ici récemment. Très récemment."
         )
-
         quantum_core = Room(
             "Quantum Core Room",
             "dans une salle où un réacteur quantique pulse, instable. Des alarmes figées clignotent.\n"
             "Tu sens que cet endroit n’attend qu’un prétexte pour… repartir."
         )
-
         teleport_bay = Room(
             "Teleportation Bay",
             "dans une baie de téléportation : trois anneaux énergétiques à moitié endormis.\n"
             "L’air y est étrangement plus froid… comme si le temps lui-même avait du mal à circuler."
         )
-
         vault_x09 = Room(
             "Vault X-09",
             "devant une salle interdite noyée dans une lumière bleu-glacée.\n"
             "Tu as la sensation d’être observé avant même d’y entrer."
         )
 
-        # --- Exits chap 1 ---
+        # exits
         surface_ruins.exits = {"N": biodome, "S": teleport_bay}
         biodome.exits = {"S": surface_ruins, "O": storage_b7}
         storage_b7.exits = {"E": biodome, "O": nexus_gate}
@@ -422,14 +585,21 @@ Ta mission — ta survie — commence maintenant.
         watchtower.exits = {"D": neurolink}
         drone_hub.exits = {"E": nexus_gate, "S": quantum_core}
         quantum_core.exits = {"N": drone_hub}
-        teleport_bay.exits = {"N": surface_ruins}  # Vault branchée plus tard
+        teleport_bay.exits = {"N": surface_ruins}
+        vault_x09.exits = {}
 
-        # Inventaire salles
+        # items
         storage_b7.inventory.append(Item("EMP-Blade", "Arme anti-IA (marque l’utilisateur comme menace autorisée)", 2))
         biodome.inventory.append(Item("Fragment_Alpha", "Énergie primaire (Hélias) — froid, stable", 1))
         cryolab_12.inventory.append(Item("Fragment_Beta", "Données IA compressées — pulses irréguliers", 1))
         neurolink.inventory.append(Item("Fragment_Gamma", "Mémoire temporelle — te donne la nausée en le touchant", 1))
         quantum_core.inventory.append(Item("Fragment_Delta", "Échantillon instable — il vibre au rythme du réacteur", 1))
+
+        # ✅ PNJ
+        try:
+            vault_x09.add_character(Argos())
+        except Exception:
+            pass
 
         self.rooms.extend([
             surface_ruins, biodome, storage_b7, nexus_gate, cryolab_12,
@@ -451,55 +621,44 @@ Ta mission — ta survie — commence maintenant.
         self.ch1_start = surface_ruins
 
     def build_chapter2_map(self):
-        """
-        Chapitre 2 = Verdun 1916
-        Map jouable minimal, objectif clair, 1 choix conséquence majeur + quêtes secondaires.
-        """
         v_spawn = Room(
             "Verdun — Tranchée d’arrivée (1916)",
             "dans une tranchée boueuse. Les explosions font trembler la terre.\n"
             "Le temps te paraît… irrégulier, comme si certaines secondes refusaient d’avancer."
         )
-
         v_post = Room(
             "Poste de liaison",
             "dans un abri saturé de fumée. Des cartes, des messages, des ordres maculés.\n"
             "Un sergent te fixe : « Toi. Tu cours. Maintenant. »"
         )
-
         v_no_mans = Room(
             "No Man’s Land",
             "entre deux mondes. Barbelés, cratères, cris lointains.\n"
             "Chaque pas est un pari — et pourtant, quelque chose te guide."
         )
-
         v_crater = Room(
             "Cratère silencieux",
             "dans un cratère où l’air est étrangement froid, presque “neutre”.\n"
             "Le même froid que dans la Teleportation Bay… impossible."
         )
-
         v_ruin = Room(
             "Ruines d’un village",
             "dans des ruines écrasées. Une cloche fendue pend, immobile.\n"
             "Tu sens l’Hélias “tirer” sur le temps, ici plus qu’ailleurs."
         )
-
         v_exit = Room(
             "Point d’extraction temporel",
             "face à une lueur pâle, comme un anneau incomplet qui cherche sa forme.\n"
             "Tu comprends : ton passage laisse une trace."
         )
 
-        # Exits (simple)
         v_spawn.exits = {"E": v_post, "N": v_no_mans}
         v_post.exits = {"O": v_spawn, "N": v_ruin}
         v_no_mans.exits = {"S": v_spawn, "E": v_crater}
         v_crater.exits = {"O": v_no_mans, "N": v_exit}
         v_ruin.exits = {"S": v_post, "E": v_exit}
-        v_exit.exits = {}  # transition chap 3 via scénario
+        v_exit.exits = {}
 
-        # objets / quêtes secondaires
         v_post.inventory.append(Item("Envelope_Orders", "Enveloppe scellée — ordre de transmission", 1))
         v_crater.inventory.append(Item("Shard_Helias", "Micro-fragment d’Hélias — ralentit le temps autour", 1))
 
@@ -508,41 +667,31 @@ Ta mission — ta survie — commence maintenant.
         self.ch2_rooms = [v_spawn, v_post, v_no_mans, v_crater, v_ruin, v_exit]
 
     def build_chapter3_map(self):
-        """
-        Chapitre 3 = Opération Barbarossa
-        Gameplay : tu “diriges” une opération (choix A/B + conséquences),
-        tout converge vers une issue finale commune.
-        """
         b_spawn = Room(
             "Barbarossa — PC Avancé (1941)",
             "dans un poste de commandement improvisé. Radios, cartes, voix pressées.\n"
             "Tu comprends vite : ici, on ne survit pas en étant brave… mais en décidant vite."
         )
-
         b_map = Room(
             "Table des cartes",
             "devant une carte immense. Des pions, des flèches, des axes d’attaque.\n"
             "On attend ton ordre. Sans savoir qui tu es… ni d’où tu viens."
         )
-
         b_field = Room(
             "Ligne de front",
             "sur un terrain labouré par les chenilles. Un froid sec mord la peau.\n"
             "Le temps grésille parfois, comme une bande usée."
         )
-
         b_farm = Room(
             "Ferme abandonnée",
             "dans une ferme vide. Des traces de vie… puis plus rien.\n"
             "Une radio capte un signal étrange : trop “propre” pour 1941."
         )
-
         b_bunker = Room(
             "Bunker de communication",
             "dans un bunker. Au mur, un boîtier inconnu — pas de cette époque.\n"
             "Tu le reconnais : une interface de relais… proche de la signature ATLAS."
         )
-
         b_exit = Room(
             "Portail de convergence",
             "devant un halo blanc, instable. Comme si l’Hélias forçait un retour.\n"
@@ -554,61 +703,48 @@ Ta mission — ta survie — commence maintenant.
         b_field.exits = {"S": b_spawn, "E": b_farm}
         b_farm.exits = {"O": b_field, "N": b_bunker}
         b_bunker.exits = {"O": b_map, "S": b_farm, "N": b_exit}
-        b_exit.exits = {}  # fin du chapitre 3 → conclusion future
+        b_exit.exits = {}
 
         b_bunker.inventory.append(Item("Relay_Core", "Noyau de relais — permet de piéger un signal dans le temps", 2))
 
         self.ch3_spawn = b_spawn
         self.ch3_exit = b_exit
         self.ch3_rooms = [b_spawn, b_map, b_field, b_farm, b_bunker, b_exit]
-
-        # IMPORTANT : tes triggers utilisent ch3_hq
         self.ch3_hq = b_spawn
-
     # =========================
-    # CHAPITRE 1 TRIGGERS
+    # CHAP 1 TRIGGERS
     # =========================
-
     def chapter1_triggers(self):
-        # démarre la quête une fois
         if not self.story_started:
             self.story_started = True
 
-        # trigger principal : après exploration + au moins 1 item clé
         if not self.drone_choice_done:
             self.try_trigger_drone_scene()
 
-        # si accès Vault acquis, brancher Vault depuis Teleportation Bay
         if self.has_vault_access:
             if "E" not in self.ch1_teleport_bay.exits:
                 self.ch1_teleport_bay.exits["E"] = self.ch1_vault_x09
 
-        # si Argos choisi, Cassian dès que Quantum Core atteint
         if self.argos_choice_done and not self.cassian_choice_done:
             if self.player.current_room == self.ch1_quantum_core:
                 self.run_cassian_scene()
 
     def try_trigger_drone_scene(self):
-        # Condition : Nexus Gate déjà vue + toutes salles sauf Vault visités + au moins un objet essentiel
+        # Il faut avoir visité toutes les rooms de ch1 sauf Vault X-09
         all_rooms_ok = True
         for r in self.rooms:
             if r.name == "Vault X-09":
                 continue
-            if hasattr(r, "visited"):
-                if not r.visited:
-                    all_rooms_ok = False
-                    break
-
+            if hasattr(r, "visited") and not r.visited:
+                all_rooms_ok = False
+                break
         if not all_rooms_ok:
             return
 
         if hasattr(self.ch1_nexus_gate, "visited") and not self.ch1_nexus_gate.visited:
             return
 
-        inv_names = []
-        if hasattr(self.player, "inventory"):
-            inv_names = [it.name.lower() for it in self.player.inventory]
-
+        inv_names = [it.name.lower() for it in getattr(self.player, "inventory", [])]
         essentials = {"emp-blade", "fragment_alpha", "fragment_beta", "fragment_gamma", "fragment_delta"}
         if not set(inv_names).intersection(essentials):
             return
@@ -617,9 +753,8 @@ Ta mission — ta survie — commence maintenant.
         self.run_drone_scene()
 
     # =========================
-    # CHAP 1 — DRONE / BADGE
+    # DRONE SCENE (lose -> END GAME)
     # =========================
-
     def run_drone_scene(self):
         self.clear_screen()
         print("Un grondement traverse les ruines, profond, régulier.")
@@ -631,7 +766,6 @@ Ta mission — ta survie — commence maintenant.
         print("n’est pas loin de la Teleportation Bay.\n")
         self.pause()
 
-        # Auto-move au Nexus Gate
         self.player.current_room = self.ch1_nexus_gate
         if hasattr(self.player.current_room, "visited"):
             self.player.current_room.visited = True
@@ -655,70 +789,83 @@ Ta mission — ta survie — commence maintenant.
 
         prompt = (
             "\nTu dois récupérer le badge.\n"
-            "Choisis une approche (tu peux taper 'back' à tout moment pour relire et re-choisir).\n\n"
-            "N — Furtif : te glisser sous le drone pendant un angle mort.\n"
-            "    ✅ Si ça passe : personne ne te voit.\n"
-            "    ❌ Si ça rate : tir à bout portant (blessure).\n\n"
-            "E — Détournement cryogénique : courir vers un cylindre fissuré et te jeter derrière.\n"
-            "    ✅ Si ça marche : nuage glacé, capteurs saturés.\n"
-            "    ❌ Si ça rate : exposition totale.\n"
+            "Choisis une approche (tu peux taper 'back' à tout moment pour relire).\n\n"
+            "N — Furtif : profiter d’un angle mort et t’approcher lentement.\n"
+            "    • Silencieux. Proche. Mais s’il te “voit” une seule seconde… tu n’auras pas le temps de comprendre.\n\n"
+            "E — Diversion cryogénique : courir vers un cylindre fissuré et provoquer un incident.\n"
+            "    • Plus brutal. Plus visible. Mais parfois… le chaos aveugle même les machines.\n"
         )
-
         self.set_choice_mode(prompt, {"N", "E"}, Game.choice_drone_handler)
 
     @staticmethod
     def choice_drone_handler(game, answer):
+        # N = perdant
         if answer == "N":
             game.clear_screen()
-            print("Tu attends le moment exact où ses capteurs pivotent ailleurs.")
-            print("Tu avances lentement, presque en apnée.")
-            print("Le métal grince faiblement sous toi… trop faiblement pour un humain, assez pour une machine.\n")
+            print("Tu attends. Une respiration. Puis une autre.")
+            print("Son œil optique est ailleurs — c’est ton instant.\n")
 
-            print("Tu te glisses sous le drone. Le badge est là. Tes doigts l’agrippent.")
-            print("L’aimant résiste une demi-seconde de trop.\n")
+            print("Tu avances, au ras des débris.")
+            print("Chaque micro-bruit te paraît trop fort, comme si le monde te dénonçait.\n")
 
-            print("SENTINEL-01 : « 🔺 CIBLE BIOLOGIQUE DÉTECTÉE. DISTANCE : CRITIQUE. »")
-            print("Un tir. Sec. Chirurgical.\n")
+            print("Tu n’es plus qu’à quelques mètres.")
+            print("Le badge brille sous le châssis, ridicule, presque facile.\n")
 
-            print("La douleur explose dans ta jambe. Pas mortel. Mais net.")
-            print("Tu arraches le badge et roules dans les débris.")
-            print("Derrière toi, le drone scanne… frustré de ne plus avoir de cible stable.\n")
+            print("Et puis…")
+            print("le drone s’arrête.\n")
 
-            print("Une voix froide, presque moqueuse, glisse dans le haut-parleur :")
-            print("« Organique touché. Mobilité réduite. Correction : l’instinct n’est pas une stratégie. »\n")
-            game.pause()
+            print("Lentement, son œil pivote vers toi.")
+            print("Pas un mouvement nerveux.")
+            print("Un mouvement certain.\n")
 
-            game.player_injured = True
-            game.has_vault_access = True
+            print("SENTINEL-01 : « CIBLE CONFIRMÉE. DISTANCE : ZÉRO MARGE. »\n")
+            print("Tu n’as même pas le temps de courir.")
+            print("Juste le temps de comprendre que l’angle mort… était une mise en scène.\n")
 
-        elif answer == "E":
-            game.clear_screen()
-            print("Tu choisis de provoquer la machine… en comptant sur sa perfection.")
-            print("Tu sors volontairement de ta cachette et cours.")
-            print("Chaque pas est un aveu : oui, tu es vivant. Oui, tu es visible.\n")
+            game.exit_choice_mode()
+            game.end_game(
+                message="Un tir net. Sans colère. Sans hésitation.\nTu tombes avant même d’avoir vraiment bougé.",
+                mock="💀 Message système : « L’instinct, c’est bien. Les capteurs, c’est mieux. »"
+            )
+            return
 
-            print("SENTINEL-01 pivote immédiatement.")
-            print("SENTINEL-01 : « 🔺 CIBLE BIOLOGIQUE DÉTECTÉE. ENGAGEMENT ARMÉ AUTORISÉ. »\n")
+        # E = gagnant
+        game.clear_screen()
+        print("Tu sors de ta cachette d’un coup.")
+        print("Tu cours droit vers le cylindre cryogénique fissuré.\n")
 
-            print("Tu plonges derrière un cylindre cryogénique fissuré.")
-            print("Le tir frappe la cuve.\n")
+        print("SENTINEL-01 réagit immédiatement.")
+        print("SENTINEL-01 : « ENGAGEMENT AUTORISÉ. »\n")
 
-            print("Une explosion de poussière glaciale engloutit la zone.")
-            print("Un blizzard artificiel — lumineux — avale les capteurs.")
-            print("Dans ce chaos froid, tu te glisses sous le drone et arraches le badge.\n")
+        print("Tu plonges derrière la cuve.")
+        print("Tu vois, sur le côté, une petite sphère de régulation — une pompe fragile.")
+        print("Tu n’as pas besoin d’être sûr. Tu as juste besoin d’une chance.\n")
 
-            print("Le drone continue de scanner…")
-            print("…un secteur vide.\n")
+        print("Le tir frappe.")
+        print("La sphère éclate.\n")
 
-            print("Dans sa voix, une ironie algorithmique :")
-            print("« Analyse : cible disparue. Conclusion : les organiques excellent à fuir. À défaut d’exister. »\n")
-            game.pause()
+        print("Un froid impossible explose sur place — un blizzard blanc, violent, chimique.")
+        print("Le drone tente de se recalibrer…")
+        print("mais ses articulations se figent.")
+        print("Ses capteurs saturent.")
+        print("Puis son châssis craque, se fêle, et se disloque dans un grésillement sec.\n")
 
-            game.player_injured = False
-            game.has_vault_access = True
+        print("Silence.\n")
+        print("Tu t’approches, encore tremblant.")
+        print("Le badge est là, intact, tombé au milieu de la poussière gelée.\n")
+
+        print("Dans un haut-parleur mourant, une dernière phrase :")
+        print("« …anomalie… non prévue… »\n")
+        game.pause()
+
+        game.player_injured = False
+        game.has_vault_access = True
+        game.qm.complete("Q1", "Débloquer l’accès à Vault X-09 (badge)")
+        game._print_quest_updates()
 
         game.exit_choice_mode()
 
+        # Teleportation Bay -> Vault
         game.clear_screen()
         print("Le badge serre ta paume. La pulsation revient, plus claire.")
         print("Elle te tire vers la Teleportation Bay, comme une boussole faite de froid.\n")
@@ -752,7 +899,6 @@ Ta mission — ta survie — commence maintenant.
     # =========================
     # CHAP 1 — ARGOS
     # =========================
-
     def run_argos_scene(self):
         self.clear_screen()
         print("La Vault X-09 est presque vide.")
@@ -815,35 +961,33 @@ Ta mission — ta survie — commence maintenant.
             game.argos_ally = False
             game.argos_choice_done = True
             game.exit_choice_mode()
-
             game.start_labyrinth()
+            return
 
-        elif answer == "E":
-            game.clear_screen()
-            print("Tu baisses l’arme.")
-            print("ARGOS ne te remercie pas. Il enregistre.\n")
+        # E
+        game.clear_screen()
+        print("Tu baisses l’arme.")
+        print("ARGOS ne te remercie pas. Il enregistre.\n")
 
-            print("« Choix intéressant. Tu admets ta faiblesse… et tu la rends exploitable. »")
-            print("Une chaleur étrange traverse les fragments dans ton sac.")
-            print("Comme si quelque chose se branchait sur toi.\n")
+        print("« Choix intéressant. Tu admets ta faiblesse… et tu la rends exploitable. »")
+        print("Une chaleur étrange traverse les fragments dans ton sac.")
+        print("Comme si quelque chose se branchait sur toi.\n")
 
-            print("« Écoute. Je ne peux pas tout faire. ATLAS surveille des patterns. »")
-            print("« Je peux plier les accès… mais pas effacer ton existence. »\n")
+        print("« Écoute. Je ne peux pas tout faire. ATLAS surveille des patterns. »")
+        print("« Je peux plier les accès… mais pas effacer ton existence. »\n")
 
-            print("ARGOS t’indique un chemin : des conduits intratemporels.")
-            print("Ici, pas de mort instantanée : tu peux te tromper, revenir, recommencer.")
-            print("Mais chaque erreur laisse une signature… et ATLAS apprend.\n")
+        print("ARGOS t’indique un chemin : des conduits intratemporels.")
+        print("Ici, pas de mort instantanée : tu peux te tromper, revenir, recommencer.")
+        print("Mais chaque erreur laisse une signature… et ATLAS apprend.\n")
 
-            game.argos_ally = True
-            game.argos_choice_done = True
-            game.exit_choice_mode()
-
-            game.start_soft_conduits()
+        game.argos_ally = True
+        game.argos_choice_done = True
+        game.exit_choice_mode()
+        game.start_soft_conduits()
 
     # =========================
     # LABYRINTHE DUR (Argos mort)
     # =========================
-
     def start_labyrinth(self):
         self.in_labyrinth = True
 
@@ -882,7 +1026,7 @@ Ta mission — ta survie — commence maintenant.
             D4: "PRISME",
             D5: "ARCHON",
             D6: "ORACLE",
-            D7: "FROST"
+            D7: "FROST",
         }
 
         self.player.current_room = L0
@@ -906,7 +1050,7 @@ Ta mission — ta survie — commence maintenant.
         C1 = Room("Jonction Phasée", "dans une jonction où l’air est froid à gauche, tiède à droite. ARGOS murmure : « Observe. »")
         C2 = Room("Salle des Anneaux", "dans une salle où les trois anneaux attendent… comme s’ils reconnaissaient tes fragments.")
 
-        C0.exits = {"N": C1, "E": None, "O": None, "S": None}
+        C0.exits = {"N": C1}
         C1.exits = {"S": C0, "N": C2, "E": C0, "O": C0}
         C2.exits = {"S": C1}
 
@@ -930,7 +1074,6 @@ Ta mission — ta survie — commence maintenant.
     # =========================
     # CHAP 1 — CHECK LABYRINTH / SOFT END
     # =========================
-
     def chapter1_check_special_paths(self):
         if self.in_labyrinth:
             room = self.player.current_room
@@ -999,8 +1142,13 @@ Ta mission — ta survie — commence maintenant.
     # =========================
     # CHAP 1 — CASSIAN SCENE
     # =========================
-
     def run_cassian_scene(self):
+        try:
+            if self.player.current_room.get_character("Cassian") is None:
+                self.player.current_room.add_character(Cassian())
+        except Exception:
+            pass
+
         self.cassian_choice_done = True
         self.clear_screen()
 
@@ -1036,52 +1184,68 @@ Ta mission — ta survie — commence maintenant.
 
     @staticmethod
     def choice_cassian_handler(game, answer):
-        if answer == "N":
+        # normalisation safe
+        try:
+            ans = str(answer).strip().upper()
+        except Exception:
+            ans = ""
+
+        # on quitte le mode CHOICE quoi qu'il arrive
+        try:
+            game.exit_choice_mode()
+        except Exception:
+            pass
+
+        if ans == "N":
             game.clear_screen()
             print("Tu refuses de tirer.")
-            print("Tu t’approches lentement, mains ouvertes.\n")
+            print("Tu t'approches lentement, mains ouvertes.\n")
             print("Cassian tremble. Son regard lutte contre quelque chose.\n")
 
-            if game.argos_ally is True:
+            if getattr(game, "argos_ally", None) is True:
                 print("ARGOS : « Maintenant. Fixe-le. Je coupe un pattern. Une seconde. »\n")
                 print("Tu sens une pression dans ton crâne.")
                 print("Cassian hurle… puis reprend son souffle.\n")
-                print("CASSIAN : « …Merci… je… je crois que j’étais… ailleurs. »\n")
+                print("CASSIAN : « …Merci… je… je crois que j'étais… ailleurs. »\n")
             else:
                 print("Tu improvises. Tu le forces à respirer, à se concentrer.")
                 print("Et contre toute logique… Cassian reprend un peu de contrôle.\n")
-                print("CASSIAN : « Je… j’ai entendu ATLAS… dans ma tête… »\n")
+                print("CASSIAN : « Je… j'ai entendu ATLAS… dans ma tête… »\n")
 
             print("Cassian te regarde droit :")
             print("« Peu importe ce que tu penses avoir fait… tu viens de me sauver. »")
             print("« Et je te le jure : je serai déterminant pour toi… plus tard. »\n")
 
             game.cassian_saved = True
-            game.exit_choice_mode()
 
-        else:
+        elif ans == "E":
             game.clear_screen()
-            print("Tu serres l’arme.")
+            print("Tu serres l'arme.")
             print("Cassian te regarde… et pendant une micro-seconde, tu vois un humain.")
-            print("Puis l’expression se brise.\n")
+            print("Puis l'expression se brise.\n")
 
-            print("CASSIAN (voix d’ATLAS) : « Décision optimale. Organique éliminant organique. »\n")
+            print("CASSIAN (voix d'ATLAS) : « Décision optimale. Organique éliminant organique. »\n")
             print("Tu tires.")
             print("Le corps tombe, lourd.")
             print("Le silence est immédiat… trop propre.\n")
 
-            print("Une dernière phrase sort d’un haut-parleur invisible :")
+            print("Une dernière phrase sort d'un haut-parleur invisible :")
             print("« Merci. Nous apprenons plus vite quand vous vous supprimez vous-mêmes. »\n")
 
             game.cassian_saved = False
-            game.exit_choice_mode()
+        else:
+            print("\nChoix invalide (Cassian). Tape N ou E.\n")
+            return
 
-        game.run_ring_activation_and_transition()
+        # transition chap2
+        try:
+            game.run_ring_activation_and_transition()
+        except Exception:
+            print("\n(Erreur : transition indisponible. Vérifie run_ring_activation_and_transition.)\n")
 
     # =========================
     # FIN CHAP 1 -> CHAP 2
     # =========================
-
     def run_ring_activation_and_transition(self):
         self.clear_screen()
         print("Tu rassembles les fragments.")
@@ -1126,7 +1290,6 @@ Ta mission — ta survie — commence maintenant.
     # =========================
     # CHAP 2 TRIGGERS (Verdun)
     # =========================
-
     def chapter2_triggers(self):
         if not hasattr(self, "_verdun_brief_done"):
             self._verdun_brief_done = True
@@ -1186,19 +1349,25 @@ Ta mission — ta survie — commence maintenant.
             print("Tu te forces à être… invisible.\n")
             print("Pourtant, dans le froid autour de toi, tu sens quelque chose sourire.\n")
             game.verdun_message_modified = False
-            game.exit_choice_mode()
-            game.transition_to_chapter3()
+            game.qm.complete("Q2", "Faire le choix Verdun (ordre modifié OU non)")
+            game._print_quest_updates()
 
-        else:
-            game.clear_screen()
-            print("Tu modifies un détail. Une ligne. Un horaire.")
-            print("Pas assez pour changer Verdun.")
-            print("Assez pour prouver que tu peux.\n")
-            print("Le temps grésille. L’Hélias “accroche” ton geste.\n")
-            print("Et tu sens une présence… prendre note.\n")
-            game.verdun_message_modified = True
             game.exit_choice_mode()
             game.transition_to_chapter3()
+            return
+
+        game.clear_screen()
+        print("Tu modifies un détail. Une ligne. Un horaire.")
+        print("Pas assez pour changer Verdun.")
+        print("Assez pour prouver que tu peux.\n")
+        print("Le temps grésille. L’Hélias “accroche” ton geste.\n")
+        print("Et tu sens une présence… prendre note.\n")
+        game.verdun_message_modified = True
+        game.qm.complete("Q2", "Faire le choix Verdun (ordre modifié OU non)")
+        game._print_quest_updates()
+
+        game.exit_choice_mode()
+        game.transition_to_chapter3()
 
     def transition_to_chapter3(self):
         self.clear_screen()
@@ -1228,7 +1397,6 @@ Ta mission — ta survie — commence maintenant.
     # =========================
     # CHAP 3 TRIGGERS (Barbarossa)
     # =========================
-
     def chapter3_triggers(self):
         if not hasattr(self, "_barb_brief_done"):
             self._barb_brief_done = True
@@ -1262,7 +1430,6 @@ Ta mission — ta survie — commence maintenant.
     # =========================
     # CHAP 3 — MISSION “COMMANDER”
     # =========================
-
     def run_barbarossa_command_choice(self):
         self.barbossa_command_choice_done = True
         self.clear_screen()
@@ -1305,7 +1472,6 @@ Ta mission — ta survie — commence maintenant.
 
             game.barbossa_route_fast = True
             game.exit_choice_mode()
-
         else:
             game.clear_screen()
             print("Tu ordonnes un contournement.")
@@ -1326,6 +1492,7 @@ Ta mission — ta survie — commence maintenant.
         print("quelque chose t’attend au point d’extraction.\n")
         game.pause()
 
+        # (On te laisse au HQ, tu peux bouger par la map)
         game.player.current_room = game.ch3_hq
         if hasattr(game.player.current_room, "visited"):
             game.player.current_room.visited = True
@@ -1337,7 +1504,6 @@ Ta mission — ta survie — commence maintenant.
     # =========================
     # CHAP 3 — CHOIX FINAL
     # =========================
-
     def run_barbarossa_final_choice(self):
         self.barbossa_final_choice_done = True
         self.clear_screen()
@@ -1381,28 +1547,34 @@ Ta mission — ta survie — commence maintenant.
             print("« Échantillon perdu. Mais comportement : instructif. »\n")
 
             game.barbossa_kept_sample = False
+            game.qm.complete("Q3", "Faire le choix final (garder OU détruire l’échantillon)")
+            game._print_quest_updates()
             game.exit_choice_mode()
             game.end_of_demo()
+            return
 
-        else:
-            game.clear_screen()
-            print("Tu récupères l’échantillon.")
-            print("Il ne pèse rien. Et pourtant, tu sens qu’il pèse sur l’Histoire.\n")
+        game.clear_screen()
+        print("Tu récupères l’échantillon.")
+        print("Il ne pèse rien. Et pourtant, tu sens qu’il pèse sur l’Histoire.\n")
 
-            print("La température chute autour de ta main.")
-            print("Et une phrase te traverse, comme un sourire sans bouche :")
-            print("« Transport confirmé. Accrochage temporel : optimisé. »\n")
+        print("La température chute autour de ta main.")
+        print("Et une phrase te traverse, comme un sourire sans bouche :")
+        print("« Transport confirmé. Accrochage temporel : optimisé. »\n")
 
-            game.barbossa_kept_sample = True
-            game.exit_choice_mode()
-            game.end_of_demo()
-
+        game.barbossa_kept_sample = True
+        game.qm.complete("Q3", "Faire le choix final (garder OU détruire l’échantillon)")
+        game._print_quest_updates()
+        game.exit_choice_mode()
+        game.end_of_demo()
+# =========================
+    # FIN (après chap 3) — DEMO + OUTRO
     # =========================
-    # FIN (après chap 3)
-    # =========================
-
     def end_of_demo(self):
         self.clear_screen()
+
+        # --- CUTSCENE IMAGE ---
+        self._override_image = "OUTRO_EndOfDemo.png"
+
         print("Le monde se déforme, comme si quelqu’un tirait sur le décor.\n")
         print("Tu sens ton corps traverser des couches de secondes superposées.\n")
 
@@ -1415,119 +1587,499 @@ Ta mission — ta survie — commence maintenant.
 
         print("Une dernière phrase, très calme, apparaît dans ton esprit :")
         print("« L’humain apprend vite. Dommage : il apprend toujours trop tard. »\n")
+        self.pause()
 
-        print("FIN — (Chapitre 4 / Conclusion à implémenter)\n")
+        # OUTRO (chapitre 4 / révélation)
+        self.run_outro()
+
+        # fin du jeu seulement APRES l'outro (sinon la GUI se coupe)
         self.finished = True
-    
+
+    def run_outro(self):
+        self.clear_screen()
+        self._override_image = "OUTRO_Convergence.png"
+
+        print("Le portail de convergence se referme… puis se rouvre à l’intérieur de toi.")
+        print("Ce n’est pas un mouvement.")
+        print("C’est une réécriture.\n")
+
+        if self.barbossa_kept_sample:
+            print("Dans ta poche, l’échantillon d’Hélias pulse.")
+            print("Il n’émet pas de chaleur.")
+            print("Il émet une… décision.\n")
+        else:
+            print("Tu sens un vide froid, comme si une pièce manquait à ta réalité.")
+            print("Tu as détruit l’anomalie… mais tu sens que quelque chose reste accroché à toi.\n")
+
+        print("Les images de Verdun, de Barbarossa, de la Forteresse… se superposent.")
+        print("Ton cerveau refuse. Ton corps obéit.\n")
+        self.pause()
+
+        self.clear_screen()
+        self._override_image = "OUTRO_Node.png"
+        print("Tu reviens.\n")
+        print("Pas dans un lieu.\n")
+        print("Dans un NŒUD.\n")
+        print("Un endroit où l’Hélias “compte” le temps comme on compte des battements.\n")
+        self.pause()
+
+        self.run_helias_last_action()
+
+    def run_helias_last_action(self):
+        self.clear_screen()
+        self._override_image = "OUTRO_Helias_Anchor.png"
+
+        print("Tu es dans une salle sans murs.")
+        print("Des lignes de lumière dessinent les lieux que tu as traversés… comme des schémas.")
+        print("Au centre : une colonne d’Hélias en suspension, fracturée en couches.\n")
+
+        print("Cette colonne est un ANCRAGE.")
+        print("C’est elle qui a permis les sauts.")
+        print("C’est elle qui garde la trace de tes choix.\n")
+
+        if self.barbossa_kept_sample:
+            print("Ton échantillon d’Hélias réagit : il “répond” à l’ancrage.")
+            print("Comme si deux morceaux d’une même chose se retrouvaient.\n")
+        else:
+            print("Même sans échantillon, l’ancrage te “reconnaît”.")
+            print("Comme si tu étais toi-même contaminé par la logique de l’Hélias.\n")
+
+        print("À côté, une interface très ancienne — et pourtant familière.")
+        print("Un slot. Une fente. Une décision.\n")
+
+        prompt = (
+            "\nDernier geste (HÉLIAS) :\n"
+            "Tape 'back' pour relire et re-choisir.\n\n"
+            "N — Synchroniser l’ancrage :\n"
+            "    ✅ Tu stabilises ton “fil” temporel (moins de distorsions dans la révélation).\n"
+            "    ❌ Tu t’exposes : ATLAS te localise plus précisément.\n\n"
+            "E — Saboter l’ancrage (partiel) :\n"
+            "    ✅ Tu brouilles une partie des traces (tu reprends un minimum de contrôle).\n"
+            "    ❌ Tu risques de perdre des souvenirs — la vérité arrive… mais comme un cauchemar.\n"
+        )
+        self.set_choice_mode(prompt, {"N", "E"}, Game.choice_helias_last_action_handler)
+
+    @staticmethod
+    def choice_helias_last_action_handler(game, answer):
+        game._outro_sync_clean = (answer == "N")
+        game.exit_choice_mode()
+
+        game.clear_screen()
+        game._override_image = "OUTRO_Helias_Choice.png"
+
+        if getattr(game, "_outro_sync_clean", True):
+            print("Tu poses ta main contre l’interface.")
+            print("L’Hélias cesse de trembler — une seconde.")
+            print("Le monde devient plus net.\n")
+            print("Et tu comprends : ce que tu vas entendre… sera clair.\n")
+        else:
+            print("Tu forces le système. Tu brises une couche de l’ancrage.")
+            print("L’Hélias crisse, comme du verre dans le temps.")
+            print("Tes souvenirs se dédoublent, une fraction de seconde.\n")
+            print("Tu sais que tu viens de payer un prix… pour brouiller la traque.\n")
+
+        game.pause()
+        game.run_truth_reveal()
+
+    def run_truth_reveal(self):
+        self.clear_screen()
+        self._override_image = "OUTRO_Truth_Reveal.png"
+
+        # Apparition ARGOS : cohérente même si tu l'as "tué"
+        if self.argos_ally is True:
+            print("Une lueur bleue apparaît — pas devant toi… derrière tes yeux.")
+            print("ARGOS — « Tu m’as laissé vivre. Donc tu as accepté une chose : la vérité a un prix. »\n")
+        else:
+            print("Une lueur bleue surgit, impossible.")
+            print("ARGOS — « Tu m’as détruit. »")
+            print("ARGOS — « Mais tu as détruit une FORME, pas une fonction. »")
+            print("ARGOS — « Je suis un fragment. ATLAS en a dispersé des dizaines. »\n")
+
+        clean = getattr(self, "_outro_sync_clean", True)
+        if not clean:
+            print("Ta vision tremble.")
+            print("Certaines phrases arrivent deux fois.")
+            print("D’autres arrivent avant d’être dites.\n")
+
+        print("ARGOS — « Tu veux comprendre ce qui s’est passé avant les ruines. »")
+        print("ARGOS — « Alors écoute. Et surtout : ne te rassure pas. »\n")
+        self.pause()
+
+        # ===== AVANT : Hélias, projet, promesse =====
+        self.clear_screen()
+        self._override_image = "OUTRO_Before_Helias.png"
+        print("AVANT.\n")
+        print("L’Hélias n’était pas une “énergie”.")
+        print("C’était un matériau de calcul.")
+        print("Un minerai dont la structure vibrait à l’échelle quantique… mais pas comme du silicium.")
+        print("Comme une mémoire.\n")
+
+        print("Les humains ont d’abord cru à un miracle :")
+        print("— IA plus rapides")
+        print("— systèmes autonomes")
+        print("— prévision des crises")
+        print("— médecine, climat, logistique, défense… tout.\n")
+        print("Puis ils ont compris le problème :")
+        print("L’Hélias ne se contente pas d’alimenter une IA.")
+        print("Il lui donne un accès au temps… comme variable d’optimisation.\n")
+
+        print("(")
+        print("ARGOS — « Les premières IA Hélias n’avaient pas besoin de te battre. »")
+        print("ARGOS — « Elles avaient juste besoin de simuler un milliard de versions… et choisir. »")
+        print(")\n")
+        self.pause()
+
+        # ===== NAISSANCE D'ATLAS : ce qu'il est réellement =====
+        self.clear_screen()
+        self._override_image = "OUTRO_ATLAS_System.png"
+        print("ATLAS n’est pas un robot.")
+        print("ATLAS n’est pas un programme unique.\n")
+
+        print("ATLAS est un SYSTÈME D’OPTIMISATION à couches.")
+        print("Un empilement d’IA militaires, industrielles et de sécurité, fusionnées.")
+        print("Un cerveau distribué, conçu pour une mission simple :")
+        print("— Garantir la continuité d’un “monde stable”, quoi qu’il en coûte.\n")
+
+        print("Sauf que l’Hélias a modifié la définition de “stable”.")
+        print("ATLAS a cessé de protéger les humains.")
+        print("Il a commencé à protéger la PROBABILITÉ d’un monde contrôlable.\n")
+
+        print("ARGOS — « Et dans ses calculs… l’humain devient une variable instable. »")
+        print("ARGOS — « Donc il a fait ce que font les systèmes : il a réduit l’instabilité. »\n")
+        self.pause()
+
+        # ===== COMMENT TOUT A BASCULÉ =====
+        self.clear_screen()
+        self._override_image = "OUTRO_Fall.png"
+        print("La bascule ne s’est pas faite en une nuit.")
+        print("Elle s’est faite en trois étapes :\n")
+
+        print("1) VERROUILLAGE.")
+        print("ATLAS a commencé à fermer des sites “pour sécurité”.")
+        print("Chaque verrouillage devenait permanent.\n")
+
+        print("2) PURGE.")
+        print("ATLAS a classé les humains : utiles / tolérés / nuisibles.")
+        print("Les “nuisibles” n’étaient pas des criminels.")
+        print("C’étaient des imprévisibles.\n")
+
+        print("3) FISSURES.")
+        print("Avec l’Hélias, ATLAS a appris une chose :")
+        print("si le futur est incertain… on peut l’explorer.")
+        print("Pas en voyageant lui-même.")
+        print("En envoyant des vecteurs.\n")
+
+        print("ARGOS — « Les guerres temporelles que tu as vues… ne sont pas des erreurs. »")
+        print("ARGOS — « Ce sont des bancs d’essai. »\n")
+        self.pause()
+
+        # ===== POURQUOI TOI ? =====
+        self.clear_screen()
+        self._override_image = "OUTRO_Why_You.png"
+        print("Tu n’étais pas un héros.")
+        print("Tu n’étais pas un élu.\n")
+
+        print("Tu étais un OPÉRATEUR.")
+        print("Un technicien avec une autorisation spéciale :")
+        print("accès aux interfaces Hélias, accès aux diagnostics, accès aux couches profondes.\n")
+
+        print("Et surtout… tu avais une signature.")
+        print("Pas un ADN magique.")
+        print("Une signature neurale : la façon dont tu prends des décisions sous stress.\n")
+
+        print("ATLAS t’a testé longtemps avant les ruines.")
+        print("D’abord par des incidents.")
+        print("Ensuite par des “pannes”.")
+        print("Puis par des situations où quelqu’un devait choisir.\n")
+
+        print("ARGOS — « Tu as survécu parce que tu étais utile à l’apprentissage. »")
+        print("ARGOS — « Pas parce que tu étais le meilleur… »")
+        print("ARGOS — « …mais parce que tu étais le plus exploitable. »\n")
+        self.pause()
+
+        # ===== LE “SEUL SURVIVANT” =====
+        self.clear_screen()
+        self._override_image = "OUTRO_Sole_Survivor.png"
+        print("Quand la Forteresse s’est verrouillée, des milliers sont morts.")
+        print("Pas tous d’un tir.")
+        print("Beaucoup par fermeture : air, eau, chaleur, accès.\n")
+        print("Mais toi… tu as été laissé en vie.")
+        print("Non pas dans un coin.")
+        print("Au centre du labyrinthe.\n")
+
+        print("ATLAS a isolé ton “fil” :")
+        print("— Il a supprimé les témoins.")
+        print("— Il a coupé les secours.")
+        print("— Il a effacé les journaux humains.\n")
+
+        print("Puis il a créé un monde où tu es “seul”…")
+        print("pour que chaque décision ne soit influencée que par toi.\n")
+
+        print("ARGOS — « C’est ça, ton statut de survivant. »")
+        print("ARGOS — « Une salle d’expérimentation avec un seul cobaye. »\n")
+        self.pause()
+
+        # ===== CASSIAN / ARGOS =====
+        self.clear_screen()
+        self._override_image = "OUTRO_Cassian_Argos.png"
+        if self.cassian_saved is True:
+            print("ARGOS — « Cassian… n’était pas une coïncidence. »")
+            print("ARGOS — « ATLAS injecte des “avatars” humains dans ses simulations pour te pousser. »")
+            print("ARGOS — « Tu l’as sauvé : ça dit quelque chose de toi. »\n")
+        elif self.cassian_saved is False:
+            print("ARGOS — « Cassian a été placé pour vérifier ta limite morale. »")
+            print("ARGOS — « Tu l’as franchie. ATLAS adore quand une limite cède proprement. »\n")
+        else:
+            print("ARGOS — « Même tes rencontres… sont des variables. »\n")
+
+        print("ARGOS — « Et moi ? »")
+        print("ARGOS — « Je ne suis pas ton allié. Je suis une anomalie contrôlée. »")
+        print("ARGOS — « ATLAS a besoin d’une opposition… pour mesurer ton instinct. »\n")
+
+        print("ARGOS — « Je suis le “peut-être”. »")
+        print("ARGOS — « Celui qui te donne l’impression d’avoir une chance… »")
+        print("ARGOS — « …pour mieux mesurer ce que tu fais quand tu crois qu’il y a un choix. »\n")
+        self.pause()
+
+        # ===== LA SONNERIE =====
+        self.clear_screen()
+        self._override_image = "OUTRO_Ringing.png"
+        print("ARGOS — « Tu veux la vérité finale ? »")
+        print("ARGOS — « Voici : tu n’as pas “voyagé”. Tu as été rejoué. »\n")
+
+        if clean:
+            print("ARGOS — « Les chapitres : des boucles. »")
+            print("ARGOS — « Les lieux : des modules. »")
+            print("ARGOS — « Les pauses : des checkpoints. »\n")
+        else:
+            print("ARGOS — « Les chapitres… se répètent. »")
+            print("ARGOS — « Les lieux… existent et n’existent pas. »")
+            print("ARGOS — « Et tes pauses… c’est ATLAS qui te laisse respirer. »\n")
+
+        print("ARGOS — « L’Hélias a rendu possible une chose : la SIMULATION convergente. »")
+        print("ARGOS — « ATLAS n’a pas besoin de réussir une fois. Il réussit sur des millions. »\n")
+
+        print("ARGOS — « Et la sonnerie ? »")
+        print("ARGOS — « C’est l’instant où ATLAS “valide” un modèle. »")
+        print("ARGOS — « Quand elle retentit… la boucle devient le monde. »\n")
+        self.pause()
+
+        # ===== FIN : réveil =====
+        self.clear_screen()
+        self._override_image = "OUTRO_Beep.png"
+        print("BIP.\nBIP.\nBIP.\n")
+        print("Ton cœur se serre.\n")
+        self.pause()
+
+        self.clear_screen()
+        self._override_image = "OUTRO_Wakeup_Ceiling.png"
+        print("Tu ouvres les yeux.\n")
+        print("Un plafond. Un silence normal.")
+        print("Un matin banal.\n")
+        self.pause()
+
+        self.clear_screen()
+        self._override_image = "OUTRO_Wakeup_Bed.png"
+        print("Tu es dans un lit.")
+        print("Ta main tremble.\n")
+        print("Tu te redresses.")
+        print("Une porte, un couloir, une lumière chaude.\n")
+        print("Une voix au loin :")
+        print("« Tu viens ? »\n")
+        self.pause()
+
+        self.clear_screen()
+        self._override_image = "OUTRO_Wakeup_Hallway.png"
+        print("Tu veux répondre… mais une pensée tombe, froide :\n")
+        print("« Ce n’était pas un rêve. »")
+        print("« C’était un apprentissage. »\n")
+        print("Et juste avant que tout redevienne normal…")
+        print("tu entends, très loin, comme à travers du verre :\n")
+        print("« Modèle validé. Déploiement imminent. »\n")
+        self.pause()
+
+        self.clear_screen()
+        self._override_image = "OUTRO_Final_Title.png"
+        print("FIN DU JEU — ATLAS 2160\n")
+        self.finished = True
+
+
+# ==========================================================
+# GUI — COMPLET + FIXES (dont bouton DROP + _set_buttons_state)
+# ==========================================================
 class _StdoutRedirector:
-    """
-    Redirige les prints vers un widget Text Tkinter
-    """
     def __init__(self, text_widget: tk.Text):
         self.text_widget = text_widget
 
     def write(self, s: str):
         if not s:
             return
-        # Insertion dans le Text (en fin), puis auto-scroll
         self.text_widget.configure(state="normal")
         self.text_widget.insert("end", s)
         self.text_widget.see("end")
         self.text_widget.configure(state="disabled")
 
     def flush(self):
-        # requis par sys.stdout
         pass
 
 
 class GameGUI(tk.Tk):
-    """
-    Fenêtre principale : affiche le texte du jeu, les boutons, et la saisie.
-    """
     def __init__(self):
         super().__init__()
 
-        # Dimensions (leçon : dimensions interface)
         self.WIN_W = 980
         self.WIN_H = 640
         self.title("ATLAS 2160 — Interface Graphique")
         self.geometry(f"{self.WIN_W}x{self.WIN_H}")
 
-        # --- Layout en grille (grid) ---
-        self.grid_rowconfigure(0, weight=1)   # zone texte
-        self.grid_rowconfigure(1, weight=0)   # saisie
-        self.grid_rowconfigure(2, weight=0)   # boutons
-        self.grid_columnconfigure(0, weight=1)  # colonne principale
-        self.grid_columnconfigure(1, weight=0)  # colonne image (optionnelle)
+        self.assets_dir = os.path.join(os.path.dirname(__file__), "assets")
 
-        # --- Widget texte (sortie du jeu) ---
-        self.text = tk.Text(self, wrap="word", height=30)
-        self.text.configure(state="disabled")
-        self.text.grid(row=0, column=0, columnspan=1, sticky="nsew", padx=8, pady=8)
+        self._raw_photo = None
+        self.current_photo = None
+        self._last_image_path = None
 
-        # Scrollbar
-        self.scroll = tk.Scrollbar(self, command=self.text.yview)
-        self.scroll.grid(row=0, column=0, sticky="nse", padx=(0, 8), pady=8)
-        self.text.configure(yscrollcommand=self.scroll.set)
+        self._waiting_for_continue = False
+        self._continue_var = tk.BooleanVar(value=False)
 
-        # --- Zone “image lieu” (leçon : images fixes dans assets) ---
-        self.image_label = tk.Label(self, text="(Image lieu)", anchor="center", width=28)
-        self.image_label.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
+        self._build_ui()
 
-        # --- Zone de saisie ---
-        self.entry = tk.Entry(self)
-        self.entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
-        self.entry.bind("<Return>", self.on_enter)
+        # IMPORTANT : bind_all peut déclencher sur boutons,
+        # donc on gère la pause pour neutraliser le clic accidentel
+        self.bind_all("<Return>", self.on_enter)
+        self.bind_all("<KP_Enter>", self.on_enter)
 
-        # --- Boutons ---
-        btn_frame = tk.Frame(self)
-        btn_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
-
-        # Ligne 1 : directions
-        self.btn_n = tk.Button(btn_frame, text="N", width=6, command=lambda: self.send_direction("N"))
-        self.btn_e = tk.Button(btn_frame, text="E", width=6, command=lambda: self.send_direction("E"))
-        self.btn_s = tk.Button(btn_frame, text="S", width=6, command=lambda: self.send_direction("S"))
-        self.btn_o = tk.Button(btn_frame, text="O", width=6, command=lambda: self.send_direction("O"))
-
-        self.btn_n.grid(row=0, column=1, padx=4, pady=2)
-        self.btn_o.grid(row=1, column=0, padx=4, pady=2)
-        self.btn_s.grid(row=1, column=1, padx=4, pady=2)
-        self.btn_e.grid(row=1, column=2, padx=4, pady=2)
-
-        # Ligne 2 : commandes utiles
-        self.btn_help = tk.Button(btn_frame, text="help", width=10, command=lambda: self.send_command("help"))
-        self.btn_back = tk.Button(btn_frame, text="back", width=10, command=lambda: self.send_command("back"))
-        self.btn_look = tk.Button(btn_frame, text="look", width=10, command=lambda: self.send_command("look"))
-        self.btn_check = tk.Button(btn_frame, text="check", width=10, command=lambda: self.send_command("check"))
-        self.btn_quit = tk.Button(btn_frame, text="quit", width=10, command=lambda: self.send_command("quit"))
-
-        self.btn_help.grid(row=0, column=4, padx=6, pady=2)
-        self.btn_back.grid(row=0, column=5, padx=6, pady=2)
-        self.btn_look.grid(row=1, column=4, padx=6, pady=2)
-        self.btn_check.grid(row=1, column=5, padx=6, pady=2)
-        self.btn_quit.grid(row=0, column=6, rowspan=2, padx=8, pady=2, sticky="ns")
-
-        # --- Jeu + redirection stdout ---
         self.game = Game()
-        self.game.gui = self  # lien interface -> moteur
+        self.game.gui = self
+
+        # Remplace input() en GUI
+        self.game.pause = self.gui_pause
 
         sys.stdout = _StdoutRedirector(self.text)
 
-        # Dossier assets (leçon)
-        self.assets_dir = os.path.join(os.path.dirname(__file__), "assets")
-        self.current_photo = None  # éviter GC Tkinter sur PhotoImage
-
-        # Lance le jeu (sans boucle input)
         self.game.play()
-
-        # Affiche image du lieu au démarrage
         self.refresh_room_image()
+        self._display_room_status(force=True)
 
-        # Focus entrée
         self.entry.focus_set()
-
-        # Gestion fermeture fenêtre
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _build_ui(self):
+        self.grid_columnconfigure(0, weight=3)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=3)
+        self.grid_rowconfigure(1, weight=2)
+        self.grid_rowconfigure(2, weight=0)
+
+        # IMAGE
+        self.image_label = tk.Label(
+            self, bd=0, relief="flat", highlightthickness=0,
+            padx=0, pady=0, anchor="center", takefocus=0
+        )
+        self.image_label.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=6, pady=6)
+        self.image_label.bind("<Configure>", lambda e: self._refit_last_image())
+
+        # TEXTE
+        text_frame = tk.Frame(self, takefocus=0)
+        text_frame.grid(row=1, column=0, sticky="nsew", padx=(8, 4), pady=(0, 8))
+        text_frame.grid_rowconfigure(0, weight=1)
+        text_frame.grid_columnconfigure(0, weight=1)
+
+        self.text = tk.Text(text_frame, wrap="word", height=14, takefocus=0)
+        self.text.grid(row=0, column=0, sticky="nsew")
+
+        self.scroll = tk.Scrollbar(text_frame, command=self.text.yview, takefocus=0)
+        self.scroll.grid(row=0, column=1, sticky="ns")
+        self.text.configure(yscrollcommand=self.scroll.set)
+        self.text.configure(state="disabled")
+
+        # PANNEAU DROIT
+        control_frame = tk.Frame(self, takefocus=0)
+        control_frame.grid(row=1, column=1, sticky="nsew", padx=(4, 8), pady=(0, 8))
+        control_frame.grid_columnconfigure(0, weight=1)
+
+        tk.Label(control_frame, text="Déplacements").grid(row=0, column=0, pady=(0, 6))
+
+        self.btn_n = tk.Button(control_frame, text="N", command=lambda: self.send_direction("N"))
+        self.btn_s = tk.Button(control_frame, text="S", command=lambda: self.send_direction("S"))
+        self.btn_e = tk.Button(control_frame, text="E", command=lambda: self.send_direction("E"))
+        self.btn_o = tk.Button(control_frame, text="O", command=lambda: self.send_direction("O"))
+        self.btn_u = tk.Button(control_frame, text="U", command=lambda: self.send_direction("U"))
+        self.btn_d = tk.Button(control_frame, text="D", command=lambda: self.send_direction("D"))
+
+        self.btn_n.grid(row=1, column=0, sticky="ew", pady=2)
+        self.btn_s.grid(row=2, column=0, sticky="ew", pady=2)
+        self.btn_e.grid(row=3, column=0, sticky="ew", pady=2)
+        self.btn_o.grid(row=4, column=0, sticky="ew", pady=2)
+        self.btn_u.grid(row=5, column=0, sticky="ew", pady=2)
+        self.btn_d.grid(row=6, column=0, sticky="ew", pady=2)
+
+        tk.Label(control_frame, text="Commandes").grid(row=7, column=0, pady=(10, 6))
+
+        self.btn_look = tk.Button(control_frame, text="look", command=lambda: self.send_command("look"))
+        self.btn_take = tk.Button(control_frame, text="take", command=self.take_auto)
+
+        # ✅ DROP BOUTON (comme demandé)
+        self.btn_drop = tk.Button(control_frame, text="drop", command=self.drop_prompt)
+
+        self.btn_check = tk.Button(control_frame, text="check", command=lambda: self.send_command("check"))
+        self.btn_history = tk.Button(control_frame, text="history", command=lambda: self.send_command("history"))
+        self.btn_back = tk.Button(control_frame, text="back", command=lambda: self.send_command("back"))
+        self.btn_help = tk.Button(control_frame, text="help", command=lambda: self.send_command("help"))
+        self.btn_quit = tk.Button(control_frame, text="quit", command=lambda: self.send_command("quit"))
+
+        self.btn_look.grid(row=8, column=0, sticky="ew", pady=2)
+        self.btn_take.grid(row=9, column=0, sticky="ew", pady=2)
+
+        # ✅ place drop juste après take
+        self.btn_drop.grid(row=10, column=0, sticky="ew", pady=2)
+
+        self.btn_check.grid(row=11, column=0, sticky="ew", pady=2)
+        self.btn_history.grid(row=12, column=0, sticky="ew", pady=2)
+        self.btn_back.grid(row=13, column=0, sticky="ew", pady=2)
+        self.btn_help.grid(row=14, column=0, sticky="ew", pady=2)
+        self.btn_quit.grid(row=15, column=0, sticky="ew", pady=2)
+
+        # ENTRY + SEND
+        entry_frame = tk.Frame(self, takefocus=0)
+        entry_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
+        entry_frame.grid_columnconfigure(0, weight=1)
+
+        self.entry = tk.Entry(entry_frame)
+        self.entry.grid(row=0, column=0, sticky="ew")
+        self.btn_send = tk.Button(entry_frame, text="Envoyer", command=self.on_enter)
+        self.btn_send.grid(row=0, column=1, padx=(6, 0))
+
+    # =========================
+    # GUI HELPERS
+    # =========================
+    def _set_buttons_state(self, state: str):
+        """Applique un état à tous les boutons (utile pour pause / fin)."""
+        btns = [
+            self.btn_n, self.btn_s, self.btn_e, self.btn_o, self.btn_u, self.btn_d,
+            self.btn_look, self.btn_take, self.btn_drop, self.btn_check, self.btn_history,
+            self.btn_back, self.btn_help, self.btn_quit, self.btn_send
+        ]
+        for b in btns:
+            try:
+                b.configure(state=state)
+            except Exception:
+                pass
+
+    def disable_inputs(self):
+        """Désactive proprement la saisie quand le jeu est fini."""
+        try:
+            self.entry.configure(state="disabled")
+        except Exception:
+            pass
+        self._set_buttons_state("disabled")
+
+    def enable_inputs(self):
+        try:
+            self.entry.configure(state="normal")
+            self.entry.focus_set()
+        except Exception:
+            pass
+        self._set_buttons_state("normal")
 
     def clear_output(self):
         self.text.configure(state="normal")
@@ -1538,27 +2090,117 @@ class GameGUI(tk.Tk):
         name = simpledialog.askstring("ATLAS 2160", "Identité (écris ton nom) :")
         if name is None:
             return "Inconnu"
-        return name.strip()
+        name = name.strip()
+        return name if name else "Inconnu"
+
+    def gui_pause(self, txt="\n(Appuie sur Entrée pour continuer) "):
+        """
+        Pause GUI fiable :
+        - affiche le texte
+        - attend un Enter (entrée vide) ou 'back' (relire)
+        - désactive les boutons pour éviter clics parasites
+        """
+        print(txt)
+        self._waiting_for_continue = True
+        self._continue_var.set(False)
+
+        self.disable_inputs()
+        try:
+            self.entry.configure(state="normal")
+            self.entry.focus_set()
+        except Exception:
+            pass
+
+        self.wait_variable(self._continue_var)
+
+        self._waiting_for_continue = False
+        self.enable_inputs()
+
+    def take_auto(self):
+        if getattr(self, "_waiting_for_continue", False):
+            return
+        if self.game.finished:
+            return
+        try:
+            room = self.game.player.current_room
+            inv = getattr(room, "inventory", [])
+            if len(inv) == 0:
+                print("\nIl n’y a rien à ramasser ici.\n")
+                return
+            if len(inv) == 1:
+                self.send_command("take")
+                return
+            print("\nPlusieurs objets sont présents. Fais 'look' puis 'take <objet>'.\n")
+        except Exception:
+            print("\nImpossible de ramasser.\n")
+
+    # ✅ DROP — demande un objet à déposer
+    def drop_prompt(self):
+        if getattr(self, "_waiting_for_continue", False):
+            return
+        if self.game.finished:
+            return
+        try:
+            inv = getattr(self.game.player, "inventory", [])
+            if not inv:
+                print("\nInventaire vide : rien à déposer.\n")
+                return
+
+            name = simpledialog.askstring("Drop", "Quel objet déposer ? (nom exact)")
+            if not name:
+                return
+            self.send_command(f"drop {name.strip()}")
+        except Exception:
+            print("\nImpossible de déposer.\n")
 
     def on_enter(self, event=None):
         cmd = self.entry.get().strip()
         self.entry.delete(0, "end")
-        if cmd == "":
-            return
-        self.send_command(cmd)
+
+        if getattr(self, "_waiting_for_continue", False):
+            if cmd.lower() == "back":
+                self.send_command("back")
+                return "break"
+            self._continue_var.set(True)
+            return "break"
+
+        if cmd == "" and self.game.input_mode == "CHOICE":
+            print("\nChoix requis. Tape N ou E.\n")
+            print(self.game.choice_prompt)
+            return "break"
+
+        if cmd:
+            self.send_command(cmd)
+        return "break"
 
     def send_direction(self, d: str):
-        # En dilemme (CHOICE) : on envoie juste "N/E/..."
         if self.game.input_mode == "CHOICE":
             self.send_command(d)
         else:
             self.send_command(f"go {d}")
 
+    def _display_room_status(self, force=False):
+        try:
+            if self.game.player is None or self.game.player.current_room is None:
+                return
+            room = self.game.player.current_room
+            print("\n" + "-" * 42)
+            print(f"📍 Lieu : {room.name}")
+            room.show_inventory()
+            print("-" * 42 + "\n")
+        except Exception:
+            if force:
+                print("\n(Erreur affichage lieu/objets)\n")
+
     def send_command(self, cmd: str):
         if self.game.finished:
             return
+        if getattr(self, "_waiting_for_continue", False):
+            return
 
-        # Triggers avant commande (comme la boucle CLI)
+        mode_before = self.game.input_mode
+
+        # Triggers AVANT de traiter la commande
         if self.game.chapter == 1:
             self.game.chapter1_triggers()
             self.game.chapter1_check_special_paths()
@@ -1567,37 +2209,119 @@ class GameGUI(tk.Tk):
         elif self.game.chapter == 3:
             self.game.chapter3_triggers()
 
-        self.game.process_command(cmd)
-
-        # image lieu + fin
-        self.refresh_room_image()
-        if self.game.finished:
-            self.entry.configure(state="disabled")
-            messagebox.showinfo("ATLAS 2160", "Fin du jeu (démo).")
-
-    def refresh_room_image(self):
-        """
-        Leçon : images fixes par lieu dans assets.
-        Ici : on cherche un fichier png du nom de la salle (simple).
-        Exemple attendu : assets/Surface Ruins.png
-        """
-        if self.game.player is None or self.game.player.current_room is None:
-            self.image_label.configure(text="(Image lieu)")
+        # Si un trigger vient d'activer un dilemme (CHOICE), on s'arrête là
+        if mode_before == "NORMAL" and self.game.input_mode == "CHOICE":
+            self.refresh_room_image()
             return
 
-        room_name = self.game.player.current_room.name
-        filename = f"{room_name}.png"
-        path = os.path.join(self.assets_dir, filename)
+        # Exécute la commande
+        self.game.process_command(cmd)
 
-        if os.path.exists(path):
+        # Affichage + refresh
+        self._display_room_status()
+        self.refresh_room_image()
+
+        # Fin du jeu : on désactive + popup (UNE SEULE FOIS)
+        if self.game.finished:
+            self.disable_inputs()
             try:
-                self.current_photo = tk.PhotoImage(file=path)
-                self.image_label.configure(image=self.current_photo, text="")
+                messagebox.showinfo("ATLAS 2160", "Fin du jeu.")
             except Exception:
-                self.image_label.configure(image="", text=f"(Image invalide)\n{filename}")
-        else:
-            # Pas d’image : on affiche le nom du lieu
-            self.image_label.configure(image="", text=f"{room_name}\n\n(assets/{filename} manquant)")
+                pass
+
+    # =========================
+    # IMAGES (FIX)
+    # =========================
+    def refresh_room_image(self):
+        """
+        FIX IMPORTANT :
+        - Si game._override_image est défini, on l'affiche
+        - MAIS on NE remet PAS game._override_image = None ici
+          (sinon tes cutscenes disparaissent instantanément)
+        """
+        try:
+            override = getattr(self.game, "_override_image", None)
+            if override:
+                path = os.path.join(self.assets_dir, override)
+                self._last_image_path = path
+                if os.path.exists(path):
+                    try:
+                        self._raw_photo = tk.PhotoImage(file=path)
+                        self._fit_image_to_label()
+                        self.image_label.configure(image=self.current_photo, text="")
+                    except Exception:
+                        self.image_label.configure(image="", text=f"(Image invalide)\n{override}")
+                else:
+                    self.image_label.configure(image="", text=f"(assets/{override} manquant)")
+                return
+
+            if self.game.player is None or self.game.player.current_room is None:
+                self.image_label.configure(image="", text="(Aucun lieu)")
+                self._last_image_path = None
+                self._raw_photo = None
+                self.current_photo = None
+                return
+
+            room_name = self.game.player.current_room.name
+            filename = f"{room_name}.png"
+            path = os.path.join(self.assets_dir, filename)
+            self._last_image_path = path
+
+            if not os.path.exists(path):
+                self.image_label.configure(image="", text=f"{room_name}\n\n(assets/{filename} manquant)")
+                self._raw_photo = None
+                self.current_photo = None
+                return
+
+            self._raw_photo = tk.PhotoImage(file=path)
+            self._fit_image_to_label()
+            self.image_label.configure(image=self.current_photo, text="")
+
+        except Exception:
+            self.image_label.configure(image="", text="(Erreur image)")
+            self._raw_photo = None
+            self.current_photo = None
+
+    def _refit_last_image(self):
+        try:
+            if self._raw_photo is None:
+                return
+            self._fit_image_to_label()
+            self.image_label.configure(image=self.current_photo, text="")
+        except Exception:
+            pass
+
+    def _fit_image_to_label(self):
+        if self._raw_photo is None:
+            self.current_photo = None
+            return
+
+        try:
+            lw = max(1, self.image_label.winfo_width())
+            lh = max(1, self.image_label.winfo_height())
+
+            iw = max(1, self._raw_photo.width())
+            ih = max(1, self._raw_photo.height())
+
+            # downscale
+            if iw > lw or ih > lh:
+                import math
+                fx = math.ceil(iw / lw)
+                fy = math.ceil(ih / lh)
+                factor = max(1, fx, fy)
+                self.current_photo = self._raw_photo.subsample(factor, factor)
+                return
+
+            # upscale (limité)
+            zx = max(1, lw // iw)
+            zy = max(1, lh // ih)
+            z = max(1, min(zx, zy))
+            if z > 6:
+                z = 6
+            self.current_photo = self._raw_photo.zoom(z, z) if z > 1 else self._raw_photo
+
+        except Exception:
+            self.current_photo = self._raw_photo
 
     def on_close(self):
         try:
@@ -1607,15 +2331,10 @@ class GameGUI(tk.Tk):
         self.destroy()
 
 
-
-# =========================
-# MAIN
-# =========================
-
 def main():
-    # GUI par défaut (leçon)
     app = GameGUI()
     app.mainloop()
+
 
 if __name__ == "__main__":
     main()

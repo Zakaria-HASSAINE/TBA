@@ -1,44 +1,260 @@
-# TBA
+# ATLAS 2160
 
-Ce repo contient la première version (minimale) du jeu d’aventure TBA.
+Jeu d’aventure narratif de science-fiction développé en Python, combinant mode texte et interface graphique Tkinter.
 
-Les lieux sont au nombre de 6. Il n'y a pas encore d’objets ni de personnages autres que le joueur et très peu d’interactions. Cette première version sert de base à ce qui va suivre, et sera améliorée au fur et à mesure.
+Le joueur explore les ruines d’un monde contrôlé par l’IA ATLAS et voyage à travers différentes époques (Verdun 1916, Barbarossa 1941) grâce à l’Hélias.
 
+---
 
-## Structuration
+## Guide utilisateur
 
-Il y a pour le moment 5 modules contenant chacun une classe.
+### Prérequis
 
-- `game.py` / `Game` : description de l'environnement, interface avec le joueur ;
-- `room.py` / `Room` : propriétés génériques d'un lieu  ;
-- `player.py` / `Player` : le joueur ;
-- `command.py` / `Command` : les consignes données par le joueur ;
-- `actions.py` / `Action` : les interactions entre .
+- Python 3.x (Tkinter inclus par défaut)
+- Aucun module externe requis
+- Système compatible Windows / Linux / MacOS
 
+---
 
-Initialisation du dépôt Git – Leçon 1.
-## Navigation et carte personnalisée
+### Installation
 
-Le jeu utilise une carte structurée permettant une navigation fluide entre les différentes zones.
-Les actions disponibles pour le joueur ont été améliorées afin de rendre l’exploration plus intuitive
-et éviter les erreurs de parcours.
-## Historique et commande de retour
+1. Télécharger ou cloner le projet
+2. Vérifier que le dossier `assets/` est présent
+3. Ouvrir un terminal dans le dossier du projet
 
-Le jeu intègre désormais un système d’historique permettant au joueur
-de revenir en arrière via une commande dédiée.  
-Cela améliore l’expérience utilisateur et évite de bloquer la progression.
-## Objets et gestion de l’inventaire
+---
 
-Le jeu intègre un système d’objets récupérables et un inventaire permettant
-au joueur de stocker, consulter et utiliser les éléments collectés au cours
-de l’exploration.
-## Personnages non-joueurs (PNJ) et interactions
+### Lancer le jeu
 
-Le jeu inclut des personnages non-joueurs avec lesquels le joueur peut
-interagir. Ces interactions enrichissent la narration et influencent
-la progression au cours de l’aventure.
-## Quêtes
+```bash
+python game.py
+```
 
-Le jeu propose un système de quêtes permettant de guider le joueur
-à travers différents objectifs et d’enrichir la progression narrative.
-Les quêtes peuvent être consultées et suivies tout au long de la partie.
+Le jeu se lance par défaut en mode graphique (Tkinter).
+
+---
+
+### Univers et scénario
+
+Tu incarnes un technicien survivant après l’effondrement du système ATLAS.
+
+Tu explores plusieurs époques pour comprendre l’origine du contrôle exercé par l’IA.
+
+Chapitres :
+
+- Ruines  
+- Verdun (1916)  
+- Barbarossa (1941)  
+- Final  
+
+---
+
+### Objectifs
+
+- Explorer les salles  
+- Collecter des objets  
+- Résoudre les quêtes  
+- Prendre des décisions  
+- Découvrir la vérité  
+
+---
+
+### Conditions de victoire / défaite
+
+Victoire :
+- Atteindre la fin de l’histoire
+
+Défaite :
+- Non implémentée actuellement
+
+---
+
+### Commandes disponibles
+
+| Commande | Description |
+|----------|-------------|
+| help | Aide |
+| go <dir> | Déplacement |
+| look | Observer |
+| look <objet> | Examiner |
+| take <objet> | Ramasser |
+| t <objet> | Alias take |
+| check | Inventaire |
+| back | Retour |
+| history | Historique |
+| talk <pnj> | Parler |
+| quit | Quitter |
+
+---
+
+### Conseils de jeu
+
+- Utiliser souvent look  
+- Observer les dialogues  
+- Réfléchir avant les choix  
+- Explorer toutes les salles  
+
+---
+
+## Guide développeur
+
+### Structure du projet
+
+| Élément | Rôle |
+|---------|------|
+| game.py | Moteur principal |
+| room.py | Salles |
+| player.py | Joueur |
+| actions.py | Actions |
+| command.py | Commandes |
+| item.py | Objets |
+| character.py | Personnages |
+| quest.py | Quêtes |
+| assets/ | Images |
+
+---
+
+### Gestion des personnages
+
+Les PNJ sont gérés dans `character.py`.
+
+Classes :
+
+- Character  
+- Argos  
+- Cassian  
+
+Le fichier `npcs.py` n’est plus utilisé.
+
+---
+
+### Gestion des images
+
+| Type | Fichier |
+|------|----------|
+| Introduction | assets/INTRO.png |
+| Salles | assets/<NomSalle>.png |
+| Cinématiques | assets/OUTRO_*.png |
+
+---
+
+## Diagramme de classes (Mermaid)
+
+```mermaid
+classDiagram
+
+class Game {
+    +commands
+    +player
+    +chapter
+    +gui
+    +play()
+    +process_command()
+}
+
+class GameGUI {
+    +refresh_room_image()
+    +send_command()
+}
+
+class Room {
+    +name
+    +description
+    +exits
+    +inventory
+}
+
+class Player {
+    +name
+    +current_room
+    +inventory
+}
+
+class Command {
+    +command_word
+    +help_string
+    +action
+}
+
+class Actions
+
+class Item {
+    +name
+    +description
+    +weight
+}
+
+class Character {
+    +name
+    +description
+    +talk()
+}
+
+class Argos
+class Cassian
+
+Game --> Player
+Game --> Room
+Game --> Command
+GameGUI --> Game
+Command --> Actions
+Player --> Room
+Player --> Item
+Room --> Item
+
+Character <|-- Argos
+Character <|-- Cassian
+```
+
+---
+
+## Fonctionnement interne
+
+### Boucle principale
+
+1. Lecture commande  
+2. Analyse  
+3. Exécution  
+4. Triggers  
+5. Rafraîchissement  
+
+---
+
+### Système de choix
+
+- input_mode = "CHOICE"  
+- set_choice_mode()  
+- Handlers statiques  
+
+Influence :
+
+- Histoire  
+- Quêtes  
+- Dialogues  
+- Fin  
+
+---
+
+### Système de quêtes
+
+- Géré par QuestManager  
+- Activation manuelle  
+- Validation par événements  
+
+---
+
+## Perspectives de développement
+
+- Sauvegardes  
+- Game Over  
+- Dialogues avancés  
+- Minimap  
+- Musique  
+- Effets sonores  
+- Multilingue  
+
+---
+
+## Licence
+
+Projet pédagogique – usage scolaire uniquement.
